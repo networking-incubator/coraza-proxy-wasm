@@ -22,6 +22,8 @@ import (
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm/types"
 )
 
+const cacheTimeoutMs = 2000
+
 type vmContext struct {
 	// Embed the default VM context here,
 	// so that we don't need to reimplement all the methods.
@@ -126,12 +128,15 @@ func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPlug
 		if config.ruleSetReloadIntervalSeconds > 0 {
 			ctx.ruleSetReloadEnabled = true
 			intervalMs := uint32(config.ruleSetReloadIntervalSeconds * 1000)
+			// we need to do up to 2 round trips to the cache to get the latest set
+			// give them at least time to either succeed or timeout and add 1 second to that
+			intervalMs = max(intervalMs, (cacheTimeoutMs*2)+1000)
 			if err := proxywasm.SetTickPeriodMilliSeconds(intervalMs); err != nil {
 				proxywasm.LogCriticalf("Failed to set tick period for rule reloading: %v", err)
 				return types.OnPluginStartStatusFailed
 			}
 
-			proxywasm.LogCriticalf("Enabled periodic rule reloading every %d seconds", config.ruleSetReloadIntervalSeconds)
+			proxywasm.LogCriticalf("Enabled periodic rule reloading every %d seconds", intervalMs/1000)
 		}
 
 		return types.OnPluginStartStatusOK
@@ -902,7 +907,7 @@ func (ctx *corazaPlugin) checkLatestRuleSet() {
 		},
 		nil,
 		[][2]string{},
-		5000,
+		cacheTimeoutMs,
 		ctx.onLatestRuleSetResponse,
 	)
 
@@ -931,7 +936,7 @@ func (ctx *corazaPlugin) fetchRulesFromCache() {
 		},
 		nil,
 		[][2]string{},
-		5000,
+		cacheTimeoutMs,
 		ctx.onRuleSetCacheServerResponse,
 	)
 
