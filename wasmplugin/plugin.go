@@ -839,15 +839,28 @@ func replaceResponseBodyWhenInterrupted(logger debuglog.Logger, bodySize int) ty
 // despite the error. If the failure policy is "fail", the request is blocked.
 func (ctx *httpContext) handleWAFError(errorMsg string) types.Action {
 	if ctx.failurePolicy != FailurePolicyAllow {
-		ctx.logger.Error().Msg(errorMsg)
+		// Log error - use logger if available, otherwise use proxywasm logging
+		if ctx.logger != nil {
+			ctx.logger.Error().Msg(errorMsg)
+		} else {
+			proxywasm.LogErrorf("WAF Error (context_id=%d): %s", ctx.contextID, errorMsg)
+		}
 		// Block the request by sending a 500 Internal Server Error response
 		if err := proxywasm.SendHttpResponse(500, nil, []byte("WAF Error"), noGRPCStream); err != nil {
-			ctx.logger.Error().Err(err).Msg("Failed to send error response")
+			if ctx.logger != nil {
+				ctx.logger.Error().Err(err).Msg("Failed to send error response")
+			} else {
+				proxywasm.LogErrorf("Failed to send error response: %v", err)
+			}
 		}
 		return types.ActionPause
 	}
 	// Allow traffic through when policy is "allow"
-	ctx.logger.Warn().Msg(errorMsg + " (allowing traffic due to failure policy)")
+	if ctx.logger != nil {
+		ctx.logger.Warn().Msg(errorMsg + " (allowing traffic due to failure policy)")
+	} else {
+		proxywasm.LogWarnf("WAF Error (context_id=%d, allowing due to failure policy): %s", ctx.contextID, errorMsg)
+	}
 	return types.ActionContinue
 }
 
