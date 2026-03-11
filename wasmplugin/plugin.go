@@ -96,6 +96,9 @@ type corazaPlugin struct {
 
 	// currentRuleSetUUID is the UUID of the currently loaded ruleset configuration
 	currentRuleSetUUID string
+
+	// failurePolicy determines how to handle errors when the WAF is not ready or encounters errors
+	failurePolicy FailurePolicy
 }
 
 func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPluginStartStatus {
@@ -114,6 +117,7 @@ func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPlug
 	// Optionally enable periodic reloading of rules from the cache server.
 	ctx.ruleSetCacheServerCluster = config.ruleSetCacheServerCluster
 	ctx.ruleSetCacheServerInstance = config.ruleSetCacheServerInstance
+	ctx.failurePolicy = config.failurePolicy
 	if ctx.ruleSetCacheServerCluster != "" {
 		proxywasm.LogCriticalf("Fetching initial rules from ruleset cache server: %s, instance: %s", ctx.ruleSetCacheServerCluster, ctx.ruleSetCacheServerInstance)
 
@@ -229,6 +233,7 @@ func (ctx *corazaPlugin) NewHttpContext(contextID uint32) types.HttpContext {
 		metrics:          ctx.metrics,
 		metricLabelsKV:   ctx.metricLabelsKV,
 		perAuthorityWAFs: ctx.perAuthorityWAFs,
+		failurePolicy:    ctx.failurePolicy,
 	}
 }
 
@@ -276,6 +281,7 @@ type httpContext struct {
 	interruptedAt         interruptionPhase
 	logger                debuglog.Logger
 	metricLabelsKV        []string
+	failurePolicy         FailurePolicy
 }
 
 func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {
@@ -288,8 +294,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 		proxywasm.LogDebugf("Failed to get the :authority pseudo-header: %v", err)
 		propHostRaw, propHostErr := proxywasm.GetProperty([]string{"request", "host"})
 		if propHostErr != nil {
-			proxywasm.LogWarnf("Failed to get the :authority pseudo-header or property of host of the request: %v", propHostErr)
-			return types.ActionContinue
+			return ctx.handleWAFError(fmt.Sprintf("Failed to get :authority pseudo-header or host property: %v", propHostErr))
 		}
 		authority = string(propHostRaw)
 	}
@@ -310,8 +315,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 			ctx.metricLabelsKV = append(ctx.metricLabelsKV, "authority", authority)
 		}
 	} else {
-		proxywasm.LogWarnf("Failed to resolve WAF for authority %q: %v", authority, resolveWAFErr)
-		return types.ActionContinue
+		return ctx.handleWAFError(fmt.Sprintf("Failed to resolve WAF for authority %q: %v", authority, resolveWAFErr))
 	}
 
 	tx := ctx.tx
@@ -336,10 +340,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 			Msg("Failed to get :method")
 		propMethodRaw, propMethodErr := proxywasm.GetProperty([]string{"request", "method"})
 		if propMethodErr != nil {
-			ctx.logger.Error().
-				Err(propMethodErr).
-				Msg("Failed to get property of method of the request")
-			return types.ActionContinue
+			return ctx.handleWAFError(fmt.Sprintf("Failed to get :method header or method property: %v", propMethodErr))
 		}
 		method = string(propMethodRaw)
 	}
@@ -358,10 +359,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 				Msg("Failed to get :path")
 			propPathRaw, propPathErr := proxywasm.GetProperty([]string{"request", "path"})
 			if propPathErr != nil {
-				ctx.logger.Error().
-					Err(propPathErr).
-					Msg("Failed to get property of path of the request")
-				return types.ActionContinue
+				return ctx.handleWAFError(fmt.Sprintf("Failed to get :path header or path property: %v", propPathErr))
 			}
 			uri = string(propPathRaw)
 		}
@@ -380,8 +378,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 
 	hs, err := proxywasm.GetHttpRequestHeaders()
 	if err != nil {
-		ctx.logger.Error().Err(err).Msg("Failed to get request headers")
-		return types.ActionContinue
+		return ctx.handleWAFError(fmt.Sprintf("Failed to get request headers: %v", err))
 	}
 
 	for _, h := range hs {
@@ -427,8 +424,7 @@ func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 		ctx.processedRequestBody = true
 		interruption, err := tx.ProcessRequestBody()
 		if err != nil {
-			ctx.logger.Error().Err(err).Msg("Failed to process request body")
-			return types.ActionContinue
+			return ctx.handleWAFError(fmt.Sprintf("Failed to process request body: %v", err))
 		}
 
 		if interruption != nil {
@@ -444,12 +440,8 @@ func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 	if chunkSize > 0 {
 		bodyChunk, err := proxywasm.GetHttpRequestBody(ctx.bodyReadIndex, chunkSize)
 		if err != nil {
-			ctx.logger.Error().Err(err).
-				Int("body_size", bodySize).
-				Int("body_read_index", ctx.bodyReadIndex).
-				Int("chunk_size", chunkSize).
-				Msg("Failed to read request body")
-			return types.ActionContinue
+			return ctx.handleWAFError(fmt.Sprintf("Failed to read request body at index %d (size=%d, chunk=%d): %v",
+				ctx.bodyReadIndex, bodySize, chunkSize, err))
 		}
 		readchunkSize := len(bodyChunk)
 		if readchunkSize != chunkSize {
@@ -457,8 +449,7 @@ func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 		}
 		interruption, writtenBytes, err := tx.WriteRequestBody(bodyChunk)
 		if err != nil {
-			ctx.logger.Error().Err(err).Msg("Failed to write request body")
-			return types.ActionContinue
+			return ctx.handleWAFError(fmt.Sprintf("Failed to write request body: %v", err))
 		}
 		if interruption != nil {
 			return ctx.handleInterruption(interruptionPhaseHttpRequestBody, interruption)
@@ -481,10 +472,7 @@ func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 		ctx.bodyReadIndex = 0 // cleaning for further usage
 		interruption, err := tx.ProcessRequestBody()
 		if err != nil {
-			ctx.logger.Error().
-				Err(err).
-				Msg("Failed to process request body")
-			return types.ActionContinue
+			return ctx.handleWAFError(fmt.Sprintf("Failed to process request body (end of stream): %v", err))
 		}
 		if interruption != nil {
 			return ctx.handleInterruption(interruptionPhaseHttpRequestBody, interruption)
@@ -537,9 +525,7 @@ func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) 
 		ctx.processedRequestBody = true
 		interruption, err := tx.ProcessRequestBody()
 		if err != nil {
-			ctx.logger.Error().
-				Err(err).Msg("Failed to process request body")
-			return types.ActionContinue
+			return ctx.handleWAFError(fmt.Sprintf("Failed to process request body in response headers phase: %v", err))
 		}
 		if interruption != nil {
 			return ctx.handleInterruption(interruptionPhaseHttpResponseHeaders, interruption)
@@ -553,10 +539,7 @@ func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) 
 			Msg("Failed to get :status")
 		propCodeRaw, propCodeErr := proxywasm.GetProperty([]string{"response", "code"})
 		if propCodeErr != nil {
-			ctx.logger.Error().
-				Err(propCodeErr).
-				Msg("Failed to get property of code of the response")
-			return types.ActionContinue
+			return ctx.handleWAFError(fmt.Sprintf("Failed to get :status header or code property: %v", propCodeErr))
 		}
 		status = string(propCodeRaw)
 	}
@@ -567,10 +550,7 @@ func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) 
 
 	hs, err := proxywasm.GetHttpResponseHeaders()
 	if err != nil {
-		ctx.logger.Error().
-			Err(err).
-			Msg("Failed to get response headers")
-		return types.ActionContinue
+		return ctx.handleWAFError(fmt.Sprintf("Failed to get response headers: %v", err))
 	}
 
 	for _, h := range hs {
@@ -624,8 +604,7 @@ func (ctx *httpContext) OnHttpResponseBody(bodySize int, endOfStream bool) types
 		if !ctx.processedResponseBody {
 			interruption, err := tx.ProcessResponseBody()
 			if err != nil {
-				ctx.logger.Error().Err(err).Msg("Failed to process response body")
-				return types.ActionContinue
+				return ctx.handleWAFError(fmt.Sprintf("Failed to process response body: %v", err))
 			}
 			ctx.processedResponseBody = true
 			if interruption != nil {
@@ -642,13 +621,8 @@ func (ctx *httpContext) OnHttpResponseBody(bodySize int, endOfStream bool) types
 	if chunkSize > 0 {
 		bodyChunk, err := proxywasm.GetHttpResponseBody(ctx.bodyReadIndex, chunkSize)
 		if err != nil {
-			ctx.logger.Error().
-				Int("body_size", bodySize).
-				Int("body_read_index", ctx.bodyReadIndex).
-				Int("chunk_size", chunkSize).
-				Err(err).
-				Msg("Failed to read response body")
-			return types.ActionContinue
+			return ctx.handleWAFError(fmt.Sprintf("Failed to read response body at index %d (size=%d, chunk=%d): %v",
+				ctx.bodyReadIndex, bodySize, chunkSize, err))
 		}
 
 		readchunkSize := len(bodyChunk)
@@ -657,8 +631,7 @@ func (ctx *httpContext) OnHttpResponseBody(bodySize int, endOfStream bool) types
 		}
 		interruption, writtenBytes, err := tx.WriteResponseBody(bodyChunk)
 		if err != nil {
-			ctx.logger.Error().Err(err).Msg("Failed to write response body")
-			return types.ActionContinue
+			return ctx.handleWAFError(fmt.Sprintf("Failed to write response body: %v", err))
 		}
 		// bodyReadIndex has to be updated before evaluating the interruption
 		// it is internally needed to replace the full body if the transaction is interrupted
@@ -682,10 +655,7 @@ func (ctx *httpContext) OnHttpResponseBody(bodySize int, endOfStream bool) types
 		ctx.processedResponseBody = true
 		interruption, err := tx.ProcessResponseBody()
 		if err != nil {
-			ctx.logger.Error().
-				Err(err).
-				Msg("Failed to process response body")
-			return types.ActionContinue
+			return ctx.handleWAFError(fmt.Sprintf("Failed to process response body (end of stream): %v", err))
 		}
 		if interruption != nil {
 			return ctx.handleInterruption(interruptionPhaseHttpResponseBody, interruption)
@@ -861,6 +831,23 @@ func replaceResponseBodyWhenInterrupted(logger debuglog.Logger, bodySize int) ty
 		return types.ActionContinue
 	}
 	logger.Warn().Msg("Response body intervention occurred: body replaced")
+	return types.ActionContinue
+}
+
+// handleWAFError handles errors encountered during WAF processing based on the
+// configured failure policy. If the failure policy is "allow", traffic continues
+// despite the error. If the failure policy is "fail", the request is blocked.
+func (ctx *httpContext) handleWAFError(errorMsg string) types.Action {
+	if ctx.failurePolicy != FailurePolicyAllow {
+		ctx.logger.Error().Msg(errorMsg)
+		// Block the request by sending a 500 Internal Server Error response
+		if err := proxywasm.SendHttpResponse(500, nil, []byte("WAF Error"), noGRPCStream); err != nil {
+			ctx.logger.Error().Err(err).Msg("Failed to send error response")
+		}
+		return types.ActionPause
+	}
+	// Allow traffic through when policy is "allow"
+	ctx.logger.Warn().Msg(errorMsg + " (allowing traffic due to failure policy)")
 	return types.ActionContinue
 }
 
