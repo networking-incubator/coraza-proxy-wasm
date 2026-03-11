@@ -13,6 +13,95 @@ import (
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm/types"
 )
 
+func TestFailurePolicyFail_BlocksOnError(t *testing.T) {
+	// Test that when failurePolicy is set to "fail", errors block the request
+	pluginConfig := `{
+		"directives_map": {
+			"default": ["SecRuleEngine On"]
+		},
+		"default_directives": "default",
+		"failure_policy": "fail"
+	}`
+
+	opt := proxytest.
+		NewEmulatorOption().
+		WithVMContext(NewVMContext()).
+		WithPluginConfiguration([]byte(pluginConfig))
+
+	host, reset := proxytest.NewHostEmulator(opt)
+	defer reset()
+
+	// Start the plugin
+	require.Equal(t, types.OnPluginStartStatusOK, host.StartPlugin())
+
+	// Initialize HTTP context
+	contextID := host.InitializeHttpContext()
+
+	// Simulate a scenario where we cannot get :authority header
+	// and the property also fails - this should trigger handleWAFError
+	// We don't set the :authority header, and we don't set the host property
+	// This will cause the error path in OnHttpRequestHeaders
+
+	// Call OnHttpRequestHeaders - should fail due to missing authority
+	action := host.CallOnRequestHeaders(contextID, [][2]string{
+		{":method", "GET"},
+		{":path", "/test"},
+		// Note: :authority is missing
+	}, false)
+
+	// With failure_policy=fail, we expect the request to be blocked
+	// The handleWAFError function sends a 500 response and returns ActionPause
+	assert.Equal(t, types.ActionPause, action)
+
+	// Verify that a local response was sent
+	localResponse := host.GetSentLocalResponse(contextID)
+	require.NotNil(t, localResponse, "Expected a local response to be sent when failure policy is fail")
+	assert.Equal(t, uint32(500), localResponse.StatusCode, "Expected 500 status code on WAF error with fail policy")
+
+	host.CompleteHttpContext(contextID)
+}
+
+func TestFailurePolicyAllow_AllowsOnError(t *testing.T) {
+	// Test that when failurePolicy is set to "allow", errors allow traffic through
+	pluginConfig := `{
+		"directives_map": {
+			"default": ["SecRuleEngine On"]
+		},
+		"default_directives": "default",
+		"failure_policy": "allow"
+	}`
+
+	opt := proxytest.
+		NewEmulatorOption().
+		WithVMContext(NewVMContext()).
+		WithPluginConfiguration([]byte(pluginConfig))
+
+	host, reset := proxytest.NewHostEmulator(opt)
+	defer reset()
+
+	// Start the plugin
+	require.Equal(t, types.OnPluginStartStatusOK, host.StartPlugin())
+
+	// Initialize HTTP context
+	contextID := host.InitializeHttpContext()
+
+	// Simulate the same error scenario - missing :authority
+	action := host.CallOnRequestHeaders(contextID, [][2]string{
+		{":method", "GET"},
+		{":path", "/test"},
+		// Note: :authority is missing
+	}, false)
+
+	// With failure_policy=allow, we expect the request to continue despite the error
+	assert.Equal(t, types.ActionContinue, action)
+
+	// Verify that NO local response was sent (traffic allowed through)
+	localResponse := host.GetSentLocalResponse(contextID)
+	assert.Nil(t, localResponse, "Expected no local response when failure policy is allow")
+
+	host.CompleteHttpContext(contextID)
+}
+
 func TestRetrieveAddressInfo(t *testing.T) {
 	testCases := map[string]struct {
 		address          []byte
