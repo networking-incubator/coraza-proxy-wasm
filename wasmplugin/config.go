@@ -10,6 +10,18 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// FailurePolicy describes how the plugin should behave when the WAF is not ready
+// or encounters errors.
+type FailurePolicy string
+
+const (
+	// FailurePolicyFail blocks traffic when the WAF is not ready or encounters errors.
+	FailurePolicyFail FailurePolicy = "fail"
+
+	// FailurePolicyAllow allows traffic through when the WAF is not ready or encounters errors.
+	FailurePolicyAllow FailurePolicy = "allow"
+)
+
 // pluginConfiguration is a type to represent an example configuration for this wasm plugin.
 type pluginConfiguration struct {
 	directivesMap          DirectivesMap
@@ -25,6 +37,9 @@ type pluginConfiguration struct {
 
 	// ruleSetReloadIntervalSeconds specifies how often to reload rules from the cache server
 	ruleSetReloadIntervalSeconds int
+
+	// failurePolicy determines the behavior when the WAF is not ready or encounters errors.
+	failurePolicy FailurePolicy
 }
 
 type DirectivesMap map[string][]string
@@ -107,6 +122,14 @@ func parsePluginConfiguration(data []byte, infoLogger func(string)) (pluginConfi
 		config.ruleSetReloadIntervalSeconds = int(ruleReloadInterval.Int())
 	} else {
 		config.ruleSetReloadIntervalSeconds = 30
+	}
+
+	// check for a configured failure policy, otherwise default to "fail"
+	failurePolicyValue := jsonData.Get("failure_policy")
+	if failurePolicyValue.Exists() {
+		config.failurePolicy = FailurePolicy(failurePolicyValue.String())
+	} else {
+		config.failurePolicy = FailurePolicyFail
 	}
 
 	if len(config.directivesMap) == 0 {

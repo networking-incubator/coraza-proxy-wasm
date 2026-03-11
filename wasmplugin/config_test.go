@@ -30,6 +30,7 @@ func TestParsePluginConfiguration(t *testing.T) {
 				metricLabels:           map[string]string{},
 				defaultDirectives:      "",
 				perAuthorityDirectives: map[string]string{},
+				failurePolicy:          FailurePolicyFail,
 			},
 		},
 		{
@@ -54,6 +55,7 @@ func TestParsePluginConfiguration(t *testing.T) {
 				metricLabels:           map[string]string{},
 				defaultDirectives:      "default",
 				perAuthorityDirectives: map[string]string{},
+				failurePolicy:          FailurePolicyFail,
 			},
 		},
 		{
@@ -73,6 +75,7 @@ func TestParsePluginConfiguration(t *testing.T) {
 				metricLabels:           map[string]string{},
 				defaultDirectives:      "default",
 				perAuthorityDirectives: map[string]string{},
+				failurePolicy:          FailurePolicyFail,
 			},
 		},
 		{
@@ -96,6 +99,7 @@ func TestParsePluginConfiguration(t *testing.T) {
 				},
 				defaultDirectives:      "default",
 				perAuthorityDirectives: map[string]string{},
+				failurePolicy:          FailurePolicyFail,
 			},
 		},
 		{
@@ -123,6 +127,7 @@ func TestParsePluginConfiguration(t *testing.T) {
 				},
 				defaultDirectives:      "default",
 				perAuthorityDirectives: map[string]string{},
+				failurePolicy:          FailurePolicyFail,
 			},
 		},
 		{
@@ -157,6 +162,7 @@ func TestParsePluginConfiguration(t *testing.T) {
 					"mydomain.com":  "custom-01",
 					"mydomain2.com": "custom-02",
 				},
+				failurePolicy: FailurePolicyFail,
 			},
 		},
 		{
@@ -193,7 +199,7 @@ func TestParsePluginConfiguration(t *testing.T) {
 		{
 			name: "backward compatibility with rules",
 			config: `
-			{ 
+			{
 				"rules": ["SecRuleEngine On", "Include @owasp_crs/*.conf\nSecRule REQUEST_URI \"@streq /admin\" \"id:101,phase:1,t:lowercase,deny\""]
 			}
 			`,
@@ -204,12 +210,13 @@ func TestParsePluginConfiguration(t *testing.T) {
 				defaultDirectives:      "default",
 				metricLabels:           map[string]string{},
 				perAuthorityDirectives: map[string]string{},
+				failurePolicy:          FailurePolicyFail,
 			},
 		},
 		{
 			name: "prefer directives instead of rules",
 			config: `
-			{ 
+			{
 				"rules": ["SecRuleEngine On", "Include @owasp_crs/*.conf\nSecRule REQUEST_URI \"@streq /rules\" \"id:101,phase:1,t:lowercase,deny\""],
 				"directives_map": {
 					"foo": ["SecRuleEngine On", "Include @owasp_crs/*.conf\nSecRule REQUEST_URI \"@streq /directives\" \"id:101,phase:1,t:lowercase,deny\""]
@@ -224,6 +231,69 @@ func TestParsePluginConfiguration(t *testing.T) {
 				defaultDirectives:      "foo",
 				metricLabels:           map[string]string{},
 				perAuthorityDirectives: map[string]string{},
+				failurePolicy:          FailurePolicyFail,
+			},
+		},
+		{
+			name: "failure_policy set to fail",
+			config: `
+			{
+				"directives_map": {
+					"default": ["SecRuleEngine On"]
+				},
+				"default_directives": "default",
+				"failure_policy": "fail"
+			}
+			`,
+			expectConfig: pluginConfiguration{
+				directivesMap: DirectivesMap{
+					"default": []string{"SecRuleEngine On"},
+				},
+				metricLabels:           map[string]string{},
+				defaultDirectives:      "default",
+				perAuthorityDirectives: map[string]string{},
+				failurePolicy:          FailurePolicyFail,
+			},
+		},
+		{
+			name: "failure_policy set to allow",
+			config: `
+			{
+				"directives_map": {
+					"default": ["SecRuleEngine On"]
+				},
+				"default_directives": "default",
+				"failure_policy": "allow"
+			}
+			`,
+			expectConfig: pluginConfiguration{
+				directivesMap: DirectivesMap{
+					"default": []string{"SecRuleEngine On"},
+				},
+				metricLabels:           map[string]string{},
+				defaultDirectives:      "default",
+				perAuthorityDirectives: map[string]string{},
+				failurePolicy:          FailurePolicyAllow,
+			},
+		},
+		{
+			name: "failure_policy defaults to fail when not provided",
+			config: `
+			{
+				"directives_map": {
+					"default": ["SecRuleEngine On"]
+				},
+				"default_directives": "default"
+			}
+			`,
+			expectConfig: pluginConfiguration{
+				directivesMap: DirectivesMap{
+					"default": []string{"SecRuleEngine On"},
+				},
+				metricLabels:           map[string]string{},
+				defaultDirectives:      "default",
+				perAuthorityDirectives: map[string]string{},
+				failurePolicy:          FailurePolicyFail,
 			},
 		},
 	}
@@ -238,6 +308,7 @@ func TestParsePluginConfiguration(t *testing.T) {
 				assert.Equal(t, testCase.expectConfig.metricLabels, cfg.metricLabels)
 				assert.Equal(t, testCase.expectConfig.defaultDirectives, cfg.defaultDirectives)
 				assert.Equal(t, testCase.expectConfig.perAuthorityDirectives, cfg.perAuthorityDirectives)
+				assert.Equal(t, testCase.expectConfig.failurePolicy, cfg.failurePolicy)
 			}
 		})
 	}
