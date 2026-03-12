@@ -834,10 +834,14 @@ func replaceResponseBodyWhenInterrupted(logger debuglog.Logger, bodySize int) ty
 	return types.ActionContinue
 }
 
-// handleWAFError handles errors encountered during WAF processing based on the
-// configured failure policy. If the failure policy is "allow", traffic continues
-// despite the error. If the failure policy is "fail", the request is blocked.
-func (ctx *httpContext) handleWAFError(errorMsg string) types.Action {
+// handleInternalEngineFailurePolicy is invoked when the WAF engine itself has an internal
+// error (e.g. memory exhaustion). This processes the internal errors and applies the
+// configured FailurePolicy to the traffic:
+//
+// - If the failure policy is "allow", traffic continues despite the error
+// - If the failure policy is "fail", the request is blocked
+//
+func (ctx *httpContext) handleInternalEngineFailurePolicy(errorMsg string) types.Action {
 	if ctx.failurePolicy != FailurePolicyAllow {
 		// Log error - use logger if available, otherwise use proxywasm logging
 		if ctx.logger != nil {
