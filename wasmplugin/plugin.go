@@ -846,7 +846,7 @@ func (ctx *httpContext) handleWAFError(errorMsg string) types.Action {
 			proxywasm.LogErrorf("WAF Error (context_id=%d): %s", ctx.contextID, errorMsg)
 		}
 		// Block the request by sending a 500 Internal Server Error response
-		if err := proxywasm.SendHttpResponse(500, nil, []byte("WAF Error"), noGRPCStream); err != nil {
+		if err := proxywasm.SendHttpResponse(http.StatusForbidden, nil, nil, noGRPCStream); err != nil {
 			if ctx.logger != nil {
 				ctx.logger.Error().Err(err).Msg("Failed to send error response")
 			} else {
