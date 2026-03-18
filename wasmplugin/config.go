@@ -127,9 +127,11 @@ func parsePluginConfiguration(data []byte, infoLogger func(string)) (pluginConfi
 	// check for a configured failure policy, otherwise default to "fail"
 	failurePolicyValue := jsonData.Get("failure_policy")
 	if failurePolicyValue.Exists() {
+		infoLogger(fmt.Sprintf("Setting FailurePolicy to `%s`", failurePolicyValue.String()))
 		config.failurePolicy = FailurePolicy(failurePolicyValue.String())
 	} else {
 		config.failurePolicy = FailurePolicyFail
+		infoLogger(fmt.Sprintf("FailurePolicy defaulting to `%s`", config.failurePolicy))
 	}
 
 	if len(config.directivesMap) == 0 {
