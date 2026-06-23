@@ -50,7 +50,7 @@ func TestFailurePolicyFail_BlocksOnError(t *testing.T) {
 	}, false)
 
 	// With failure_policy=fail, we expect the request to be blocked
-	// The handleWAFError function sends a 500 response and returns ActionPause
+	// The handleInternalEngineFailurePolicy function sends a 500 response and returns ActionPause
 	assert.Equal(t, types.ActionPause, action)
 
 	// Verify that a local response was sent

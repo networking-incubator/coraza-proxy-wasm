@@ -173,9 +173,9 @@ func TestLifecycleMultiPhase(t *testing.T) {
 			tt := tc
 
 			t.Run(tt.name, func(t *testing.T) {
-				conf := `{"directives_map": {"default": []}, "default_directives": "default"}`
+				conf := defaultPluginConfigForTests
 				if inlineRules := strings.TrimSpace(tt.inlineRules); inlineRules != "" {
-					conf = fmt.Sprintf(`{"directives_map": {"default": ["%s"]}, "default_directives": "default"}`, inlineRules)
+					conf = fmt.Sprintf(`{"directives_map": {"default": ["%s"]}, "default_directives": "default", "metrics_mode": "contract", "engine": "test-engine", "namespace": "test-ns"}`, inlineRules)
 				}
 				opt := proxytest.
 					NewEmulatorOption().
@@ -196,8 +196,6 @@ func TestLifecycleMultiPhase(t *testing.T) {
 
 				requestHdrsAction := host.CallOnRequestHeaders(id, tt.reqHdrs, false)
 				require.Equal(t, tt.requestHdrsAction, requestHdrsAction)
-
-				checkTXMetric(t, host, 1)
 
 				// Stream bodies in chunks of 5
 
@@ -259,6 +257,13 @@ func TestLifecycleMultiPhase(t *testing.T) {
 
 				// Call OnHttpStreamDone.
 				host.CompleteHttpContext(id)
+
+				switch {
+				case tt.responded403, tt.responded413, tt.respondedNullBody:
+					checkRequestOutcomeMetric(t, host, "block", 1)
+				default:
+					checkRequestOutcomeMetric(t, host, "pass", 1)
+				}
 
 				pluginResp := host.GetSentLocalResponse(id)
 				switch {

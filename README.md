@@ -206,23 +206,20 @@ curl -I --user-agent "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML,
 
 ### WAF Metrics
 
-Metrics are exposed in the prometheus format under `localhost:8082` (admin cluster in the envoy config).
+Metrics are exposed in the Prometheus format on the Envoy admin port (`localhost:8082` in the example config). The driver emits `coraza_waf_*` stats when `engine` and `namespace` are set in the Wasm plugin configuration.
 
 ```bash
-curl -s localhost:8082/stats/prometheus | grep waf_filter
+curl -s localhost:8082/stats/prometheus | grep coraza_waf
 ```
 
-and we get the metrics with the corresponding tags:
+Example output with `stats_tags` configured (see `example/envoy/envoy-config.yaml`):
 
 ```bash
-# TYPE waf_filter_tx_interruptions counter
-waf_filter_tx_interruptions{phase="http_request_headers_identifier",rule_id="101",identifier="global",owner="coraza"} 1
-waf_filter_tx_interruptions{phase="http_request_body_identifier",rule_id="102",identifier="global",owner="coraza"} 1
-waf_filter_tx_interruptions{phase="http_response_headers_identifier",rule_id="103",identifier="global",owner="coraza"} 1
-waf_filter_tx_interruptions{phase="http_response_body_identifier",rule_id="104",identifier="global",owner="coraza"} 1
-waf_filter_tx_interruptions{phase="http_request_body_identifier",rule_id="949110",identifier="global",owner="coraza"} 1
-waf_filter_tx_interruptions{phase="http_response_headers_identifier",rule_id="949110",identifier="global",owner="coraza"} 1
-waf_filter_tx_interruptions{phase="http_request_headers_identifier",rule_id="949111",identifier="global",owner="coraza"} 1
-# TYPE waf_filter_tx_total counter
-waf_filter_tx_total{} 11
+# TYPE coraza_waf_requests_total counter
+coraza_waf_requests_total{engine="example-engine",namespace="example",driver_type="wasm",outcome="block"} 1
+coraza_waf_requests_total{engine="example-engine",namespace="example",driver_type="wasm",outcome="pass"} 10
+# TYPE coraza_waf_rule_hits_total counter
+coraza_waf_rule_hits_total{engine="example-engine",namespace="example",driver_type="wasm",rule_id="101",severity="CRITICAL",outcome="block"} 1
 ```
+
+Without `stats_config.stats_tags`, metrics appear as flat Envoy stat names and Prometheus labels are not extracted.

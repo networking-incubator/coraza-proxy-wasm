@@ -81,9 +81,12 @@ type corazaPlugin struct {
 	// Embed the default plugin context here,
 	// so that we don't need to reimplement all the methods.
 	types.DefaultPluginContext
-	perAuthorityWAFs wafMap
-	metricLabelsKV   []string
-	metrics          *wafMetrics
+	perAuthorityWAFs     wafMap
+	metricLabelsKV       []string
+	legacyMetrics        *wafMetrics
+	contractMetrics      *contractMetrics
+	metricsMode          metricsMode
+	suppressCRSAuditLogs bool
 
 	// ruleSetCacheServerCluster is the Envoy cluster address of the RuleSet Cache Server
 	ruleSetCacheServerCluster string
@@ -102,6 +105,9 @@ type corazaPlugin struct {
 
 	// failurePolicy determines how to handle errors when the WAF is not ready or encounters errors
 	failurePolicy FailurePolicy
+
+	engine    string
+	namespace string
 }
 
 func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPluginStartStatus {
@@ -122,16 +128,17 @@ func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPlug
 	ctx.ruleSetCacheServerInstance = config.ruleSetCacheServerInstance
 	ctx.ruleSetCacheServerToken = config.ruleSetCacheServerToken
 	ctx.failurePolicy = config.failurePolicy
+	ctx.engine = config.engine
+	ctx.namespace = config.namespace
+	ctx.metricsMode = config.metricsMode
+	ctx.suppressCRSAuditLogs = config.suppressCRSAuditLogs
+	ctx.initMetricsFromConfig(config)
 	if ctx.ruleSetCacheServerCluster != "" {
 		proxywasm.LogCriticalf("Fetching initial rules from ruleset cache server: %s, instance: %s", ctx.ruleSetCacheServerCluster, ctx.ruleSetCacheServerInstance)
 
 		ctx.fetchRulesFromCache()
 
 		ctx.perAuthorityWAFs = newWAFMap(0)
-		for k, v := range config.metricLabels {
-			ctx.metricLabelsKV = append(ctx.metricLabelsKV, k, v)
-		}
-		ctx.metrics = NewWAFMetrics()
 
 		if config.ruleSetReloadIntervalSeconds > 0 {
 			ctx.ruleSetReloadEnabled = true
@@ -179,7 +186,7 @@ func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPlug
 
 		// First we initialize our waf and our seclang parser
 		conf := coraza.NewWAFConfig().
-			WithErrorCallback(logError).
+			WithErrorCallback(errorCallbackForConfig(config)).
 			WithDebugLogger(debuglog.DefaultWithPrinterFactory(logPrinterFactory)).
 			// TODO(anuraaga): Make this configurable in plugin configuration.
 			// WithRequestBodyLimit(1024 * 1024 * 1024).
@@ -191,6 +198,9 @@ func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPlug
 		waf, err := coraza.NewWAF(conf.WithDirectives(strings.Join(directives, "\n")))
 		if err != nil {
 			proxywasm.LogCriticalf("Failed to parse directives: %v", err)
+			if ctx.contractMetrics != nil {
+				ctx.contractMetrics.RecordPluginLoad(false)
+			}
 			return types.OnPluginStartStatusFailed
 		}
 
@@ -219,25 +229,45 @@ func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPlug
 			proxywasm.LogCriticalf("Unknown directives %q", unknownDirective)
 		}
 
+		ctx.contractMetrics.RecordPluginLoad(false)
 		return types.OnPluginStartStatusFailed
 	}
 
 	ctx.perAuthorityWAFs = perAuthorityWAFs
+	if ctx.contractMetrics != nil {
+		ctx.contractMetrics.RecordLoadConfiguration(joinDirectives(config.directivesMap))
+		ctx.contractMetrics.RecordPluginLoad(true)
+	}
+
+	return types.OnPluginStartStatusOK
+}
+
+func (ctx *corazaPlugin) initMetricsFromConfig(config pluginConfiguration) {
 	for k, v := range config.metricLabels {
 		ctx.metricLabelsKV = append(ctx.metricLabelsKV, k, v)
 	}
-	ctx.metrics = NewWAFMetrics()
-
-	return types.OnPluginStartStatusOK
+	if config.metricsMode.usesLegacyMetrics() {
+		ctx.legacyMetrics = NewWAFMetrics()
+	}
+	if config.metricsMode.usesContractMetrics() {
+		ctx.contractMetrics = newContractMetrics(contractMetricsConfig{
+			Engine:    config.engine,
+			Namespace: config.namespace,
+		}, proxywasm.LogWarnf)
+	}
 }
 
 func (ctx *corazaPlugin) NewHttpContext(contextID uint32) types.HttpContext {
 	return &httpContext{
 		contextID:        contextID,
-		metrics:          ctx.metrics,
+		legacyMetrics:    ctx.legacyMetrics,
+		contractMetrics:  ctx.contractMetrics,
 		metricLabelsKV:   ctx.metricLabelsKV,
+		metricsMode:      ctx.metricsMode,
 		perAuthorityWAFs: ctx.perAuthorityWAFs,
 		failurePolicy:    ctx.failurePolicy,
+		engine:           ctx.engine,
+		namespace:        ctx.namespace,
 	}
 }
 
@@ -281,17 +311,27 @@ type httpContext struct {
 	processedRequestBody  bool
 	processedResponseBody bool
 	bodyReadIndex         int
-	metrics               *wafMetrics
+	legacyMetrics         *wafMetrics
+	contractMetrics       *contractMetrics
+	metricLabelsKV        []string
+	metricsMode           metricsMode
 	interruptedAt         interruptionPhase
 	logger                debuglog.Logger
-	metricLabelsKV        []string
 	failurePolicy         FailurePolicy
+	evalError             bool
+	engine                string
+	namespace             string
+	requestMethod         string
+	requestURI            string
+	clientIP              string
 }
 
 func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {
 	defer logTime("OnHttpRequestHeaders", currentTime())
 
-	ctx.metrics.CountTX()
+	if ctx.legacyMetrics != nil {
+		ctx.legacyMetrics.CountTX()
+	}
 
 	authority, err := proxywasm.GetHttpRequestHeader(":authority")
 	if err != nil {
@@ -334,6 +374,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 	// OnHttpRequestHeaders does not terminate if IP/Port retrieve goes wrong
 	srcIP, srcPort := retrieveAddressInfo(ctx.logger, "source")
 	dstIP, dstPort := retrieveAddressInfo(ctx.logger, "destination")
+	ctx.clientIP = srcIP
 
 	tx.ProcessConnection(srcIP, srcPort, dstIP, dstPort)
 
@@ -368,6 +409,9 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 			uri = string(propPathRaw)
 		}
 	}
+
+	ctx.requestMethod = method
+	ctx.requestURI = uri
 
 	protocol, err := proxywasm.GetProperty([]string{"request", "protocol"})
 	if err != nil {
@@ -702,6 +746,8 @@ func (ctx *httpContext) OnHttpStreamDone() {
 		// Internally, if the engine is off, no log phase rules are evaluated
 		ctx.tx.ProcessLogging()
 
+		ctx.recordTransactionMetrics()
+
 		err := ctx.tx.Close()
 		if err != nil {
 			ctx.logger.Error().Err(err).Msg("Failed to close transaction")
@@ -714,13 +760,31 @@ func (ctx *httpContext) OnHttpStreamDone() {
 const noGRPCStream int32 = -1
 const defaultInterruptionStatusCode int = 403
 
+func (ctx *httpContext) recordTransactionMetrics() {
+	if ctx.contractMetrics == nil || !ctx.contractMetrics.enabledMetrics() || ctx.tx == nil {
+		return
+	}
+
+	tx := ctx.tx
+	interrupted := ctx.interruptedAt.isInterrupted()
+	var interruption *ctypes.Interruption
+	if interrupted {
+		interruption = tx.Interruption()
+	}
+
+	outcome := classifyRequestOutcome(tx, interrupted, interruption, ctx.evalError)
+	matched := tx.MatchedRules()
+	ctx.contractMetrics.RecordRequestOutcome(outcome)
+	ctx.contractMetrics.RecordMatchedRules(matched, outcome)
+	ctx.contractMetrics.RecordAnomalyScore(anomalyScoreFromMatchedRules(matched))
+	ctx.contractMetrics.RecordBlockedCategories(matched, outcome)
+}
+
 func (ctx *httpContext) handleInterruption(phase interruptionPhase, interruption *ctypes.Interruption) types.Action {
 	if ctx.interruptedAt.isInterrupted() {
 		// handleInterruption should never be called more than once
 		panic("Interruption already handled")
 	}
-
-	ctx.metrics.CountTXInterruption(phase.String(), interruption.RuleID, ctx.metricLabelsKV)
 
 	ctx.logger.Info().
 		Str("action", interruption.Action).
@@ -728,6 +792,10 @@ func (ctx *httpContext) handleInterruption(phase interruptionPhase, interruption
 		Msg("Transaction interrupted")
 
 	ctx.interruptedAt = phase
+	if ctx.legacyMetrics != nil {
+		ctx.legacyMetrics.CountTXInterruption(phase.String(), interruption.RuleID, ctx.metricLabelsKV)
+	}
+	ctx.logBlockedRequest(phase, interruption)
 	if phase == interruptionPhaseHttpResponseBody {
 		return replaceResponseBodyWhenInterrupted(ctx.logger, ctx.bodyReadIndex)
 	}
@@ -742,6 +810,20 @@ func (ctx *httpContext) handleInterruption(phase interruptionPhase, interruption
 
 	// SendHttpResponse must be followed by ActionPause in order to stop malicious content
 	return types.ActionPause
+}
+
+func errorCallbackForConfig(config pluginConfiguration) func(ctypes.MatchedRule) {
+	if config.suppressCRSAuditLogs {
+		return func(ctypes.MatchedRule) {}
+	}
+	return logError
+}
+
+func errorCallbackForPlugin(ctx *corazaPlugin) func(ctypes.MatchedRule) {
+	if ctx.suppressCRSAuditLogs {
+		return func(ctypes.MatchedRule) {}
+	}
+	return logError
 }
 
 func logError(error ctypes.MatchedRule) {
@@ -845,6 +927,7 @@ func replaceResponseBodyWhenInterrupted(logger debuglog.Logger, bodySize int) ty
 // - If the failure policy is "allow", traffic continues despite the error
 // - If the failure policy is "fail", the request is blocked
 func (ctx *httpContext) handleInternalEngineFailurePolicy(errorMsg string) types.Action {
+	ctx.evalError = true
 	if ctx.failurePolicy != FailurePolicyAllow {
 		// Log error - use logger if available, otherwise use proxywasm logging
 		if ctx.logger != nil {
@@ -1068,18 +1151,26 @@ func (ctx *corazaPlugin) onRuleSetCacheServerResponse(numHeaders, bodySize, numT
 	proxywasm.LogInfof("Received ruleset configuration: UUID=%s, Timestamp=%s, Size=%d bytes", rulesResp.UUID, rulesResp.Timestamp, len(rulesResp.Rules))
 
 	conf := coraza.NewWAFConfig().
-		WithErrorCallback(logError).
+		WithErrorCallback(errorCallbackForPlugin(ctx)).
 		WithDebugLogger(debuglog.DefaultWithPrinterFactory(logPrinterFactory)).
 		WithRootFS(NewRuleDataFS(rulesResp.DataFiles))
 
 	waf, err := coraza.NewWAF(conf.WithDirectives(rulesResp.Rules))
 	if err != nil {
 		proxywasm.LogCriticalf("Failed to create WAF from cached rules: %v", err)
+		if ctx.contractMetrics != nil {
+			ctx.contractMetrics.RecordPluginLoad(false)
+		}
 		return
 	}
 
 	ctx.perAuthorityWAFs.setDefaultWAF(waf)
 	ctx.currentRuleSetUUID = rulesResp.UUID
+	if ctx.contractMetrics != nil {
+		ctx.contractMetrics.resetOnReload()
+		ctx.contractMetrics.RecordLoadConfiguration(rulesResp.Rules)
+		ctx.contractMetrics.RecordPluginLoad(true)
+	}
 
 	proxywasm.LogCriticalf("Successfully loaded and activated WAF configuration (UUID: %s, %d bytes) from the ruleset cache server", rulesResp.UUID, len(rulesResp.Rules))
 	if len(rulesResp.DataFiles) > 0 {
