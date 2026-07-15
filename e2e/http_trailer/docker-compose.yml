@@ -7,7 +7,7 @@ services:
   envoy:
     depends_on:
       - httpbin
-    image: ${ENVOY_IMAGE:-envoyproxy/envoy:v1.31-latest}
+    image: ${ENVOY_IMAGE:-envoyproxy/envoy:v1.39-latest}
     entrypoint: /usr/local/bin/envoy
     command:
       - -c
