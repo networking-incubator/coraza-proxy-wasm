@@ -16,12 +16,12 @@ env:
   TINYGO_VERSION: 0.34.0
   # Run e2e tests against latest two releases and latest dev
   ENVOY_IMAGES: >
-    envoyproxy/envoy:v1.33-latest
-    envoyproxy/envoy:v1.32-latest
+    envoyproxy/envoy:v1.38-latest
+    envoyproxy/envoy:v1.39-latest
     envoyproxy/envoy-dev:latest
-    istio/proxyv2:1.25.0
-    istio/proxyv2:1.24.3
-    istio/proxyv2:1.23.5
+    istio/proxyv2:1.30.0
+    istio/proxyv2:1.29.3
+    istio/proxyv2:1.28.5
 
 jobs:
   build:
