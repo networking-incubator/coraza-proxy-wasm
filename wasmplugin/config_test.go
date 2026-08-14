@@ -318,6 +318,28 @@ func TestParsePluginConfiguration(t *testing.T) {
 				ruleSetCacheServerToken: "bla123",
 			},
 		},
+		{
+			name: "enable_filter_state_logs",
+			config: `
+			{
+				"directives_map": {
+					"default": ["SecRuleEngine On"]
+				},
+				"default_directives": "default",
+				"enable_filter_state_logs": true
+			}
+			`,
+			expectConfig: pluginConfiguration{
+				directivesMap: DirectivesMap{
+					"default": []string{"SecRuleEngine On"},
+				},
+				metricLabels:           map[string]string{},
+				defaultDirectives:      "default",
+				perAuthorityDirectives: map[string]string{},
+				failurePolicy:          FailurePolicyFail,
+				enableFilterStateLogs:  true,
+			},
+		},
 	}
 
 	for _, testCase := range testCases {
@@ -332,6 +354,7 @@ func TestParsePluginConfiguration(t *testing.T) {
 				assert.Equal(t, testCase.expectConfig.perAuthorityDirectives, cfg.perAuthorityDirectives)
 				assert.Equal(t, testCase.expectConfig.failurePolicy, cfg.failurePolicy)
 				assert.Equal(t, testCase.expectConfig.ruleSetCacheServerToken, cfg.ruleSetCacheServerToken)
+				assert.Equal(t, testCase.expectConfig.enableFilterStateLogs, cfg.enableFilterStateLogs)
 			}
 		})
 	}

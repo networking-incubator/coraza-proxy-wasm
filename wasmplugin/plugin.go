@@ -102,6 +102,10 @@ type corazaPlugin struct {
 
 	// failurePolicy determines how to handle errors when the WAF is not ready or encounters errors
 	failurePolicy FailurePolicy
+
+	// enableFilterStateLogs enables the plugin to issue Envoy Filter state that can be used
+	// by the host process for features like shipping intervention data to logs
+	enableFilterStateLogs bool
 }
 
 func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPluginStartStatus {
@@ -122,6 +126,7 @@ func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPlug
 	ctx.ruleSetCacheServerInstance = config.ruleSetCacheServerInstance
 	ctx.ruleSetCacheServerToken = config.ruleSetCacheServerToken
 	ctx.failurePolicy = config.failurePolicy
+	ctx.enableFilterStateLogs = config.enableFilterStateLogs
 	if ctx.ruleSetCacheServerCluster != "" {
 		proxywasm.LogCriticalf("Fetching initial rules from ruleset cache server: %s, instance: %s", ctx.ruleSetCacheServerCluster, ctx.ruleSetCacheServerInstance)
 
@@ -233,11 +238,12 @@ func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPlug
 
 func (ctx *corazaPlugin) NewHttpContext(contextID uint32) types.HttpContext {
 	return &httpContext{
-		contextID:        contextID,
-		metrics:          ctx.metrics,
-		metricLabelsKV:   ctx.metricLabelsKV,
-		perAuthorityWAFs: ctx.perAuthorityWAFs,
-		failurePolicy:    ctx.failurePolicy,
+		contextID:             contextID,
+		metrics:               ctx.metrics,
+		metricLabelsKV:        append([]string(nil), ctx.metricLabelsKV...),
+		perAuthorityWAFs:      ctx.perAuthorityWAFs,
+		failurePolicy:         ctx.failurePolicy,
+		enableFilterStateLogs: ctx.enableFilterStateLogs,
 	}
 }
 
@@ -287,6 +293,7 @@ type httpContext struct {
 	metricLabelsKV           []string
 	failurePolicy            FailurePolicy
 	processedResponseHeaders bool
+	enableFilterStateLogs    bool
 }
 
 func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {
@@ -733,6 +740,12 @@ func (ctx *httpContext) handleInterruption(phase interruptionPhase, interruption
 		Msg("Transaction interrupted")
 
 	ctx.interruptedAt = phase
+
+	if ctx.enableFilterStateLogs {
+		// Issue the Envoy filter state for further logging
+		ctx.filterStateLog(phase, interruption)
+	}
+
 	if phase == interruptionPhaseHttpResponseBody {
 		return replaceResponseBodyWhenInterrupted(ctx.logger, ctx.bodyReadIndex)
 	}
