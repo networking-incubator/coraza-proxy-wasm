@@ -252,6 +252,57 @@ func TestCheckLatestRuleSet_AuthorizationHeader(t *testing.T) {
 	}
 }
 
+type testVMContext struct {
+	types.DefaultVMContext
+	pluginCtx *corazaPlugin
+}
+
+func (v *testVMContext) NewPluginContext(contextID uint32) types.PluginContext {
+	ctx := &corazaPlugin{}
+	v.pluginCtx = ctx
+	return ctx
+}
+
+func TestCheckLatestRuleSetAndLogFilterState(t *testing.T) {
+	config := `{
+				"directives_map": {
+					"default": ["SecRuleEngine On"]
+				},
+				"default_directives": "default",
+				"cache_server_cluster": "outbound|80||cache.example.com",
+				"cache_server_instance": "my-instance",
+				"rule_reload_interval_seconds": 10,
+				"enable_filter_state_logs": true,
+				"cache_token": "reload-token"}`
+
+	vm := &testVMContext{}
+	opt := proxytest.
+		NewEmulatorOption().
+		WithVMContext(vm).
+		WithPluginConfiguration([]byte(config))
+
+	host, reset := proxytest.NewHostEmulator(opt)
+	defer reset()
+
+	require.Equal(t, types.OnPluginStartStatusOK, host.StartPlugin())
+
+	// OnPluginStart dispatches fetchRulesFromCache; Tick dispatches checkLatestRuleSet.
+	host.Tick()
+
+	callouts := host.GetCalloutAttributesFromContext(proxytest.PluginContextID)
+	latestCallout, found := findCalloutByPath(callouts, "/rules/my-instance/latest")
+	require.True(t, found, "expected a callout to /rules/my-instance/latest from checkLatestRuleSet")
+
+	assert.Equal(t, "outbound|80||cache.example.com", latestCallout.Upstream)
+
+	authVal, hasAuth := findHeader(latestCallout.Headers, "authorization")
+	require.True(t, hasAuth, "expected authorization header to be present")
+	assert.Equal(t, "Bearer reload-token", authVal)
+	require.Equal(t, vm.pluginCtx.failurePolicy, FailurePolicyFail)
+	require.True(t, vm.pluginCtx.enableFilterStateLogs)
+
+}
+
 func TestRetrieveAddressInfo(t *testing.T) {
 	testCases := map[string]struct {
 		address          []byte
