@@ -43,18 +43,6 @@ type pluginConfiguration struct {
 
 	// failurePolicy determines the behavior when the WAF is not ready or encounters errors.
 	failurePolicy FailurePolicy
-
-	// engine and namespace identify the Engine CRD for coraza_waf_* metric labels.
-	engine    string
-	namespace string
-
-	// metricsMode selects legacy waf_filter_* metrics (default) or coraza_waf_* contract metrics.
-	metricsMode metricsMode
-
-	// suppressCRSAuditLogs disables ModSecurity-style Coraza audit lines on the proxy log
-	// stream when structured JSON block logs are emitted (contract mode). FTW conformance
-	// reads raw pod logs and requires audit lines unless tests are updated for JSON.
-	suppressCRSAuditLogs bool
 }
 
 type DirectivesMap map[string][]string
@@ -153,23 +141,6 @@ func parsePluginConfiguration(data []byte, infoLogger func(string)) (pluginConfi
 	} else {
 		config.failurePolicy = FailurePolicyFail
 		infoLogger(fmt.Sprintf("FailurePolicy defaulting to `%s`", config.failurePolicy))
-	}
-
-	if engine := jsonData.Get("engine"); engine.Exists() {
-		config.engine = engine.String()
-	}
-	if namespace := jsonData.Get("namespace"); namespace.Exists() {
-		config.namespace = namespace.String()
-	}
-
-	mode, err := parseMetricsMode(jsonData.Get("metrics_mode"))
-	if err != nil {
-		return config, err
-	}
-	config.metricsMode = mode
-
-	if suppress := jsonData.Get("suppress_crs_audit_logs"); suppress.Exists() {
-		config.suppressCRSAuditLogs = suppress.Bool()
 	}
 
 	if len(config.directivesMap) == 0 {

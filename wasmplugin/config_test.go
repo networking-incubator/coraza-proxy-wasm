@@ -297,52 +297,6 @@ func TestParsePluginConfiguration(t *testing.T) {
 			},
 		},
 		{
-			name: "suppress_crs_audit_logs enabled",
-			config: `
-			{
-				"directives_map": {
-					"default": ["SecRuleEngine On"]
-				},
-				"default_directives": "default",
-				"suppress_crs_audit_logs": true
-			}
-			`,
-			expectConfig: pluginConfiguration{
-				directivesMap: DirectivesMap{
-					"default": []string{"SecRuleEngine On"},
-				},
-				metricLabels:           map[string]string{},
-				defaultDirectives:      "default",
-				perAuthorityDirectives: map[string]string{},
-				failurePolicy:          FailurePolicyFail,
-				suppressCRSAuditLogs:   true,
-			},
-		},
-		{
-			name: "engine and namespace labels",
-			config: `
-			{
-				"directives_map": {
-					"default": ["SecRuleEngine On"]
-				},
-				"default_directives": "default",
-				"engine": "gw-waf",
-				"namespace": "prod"
-			}
-			`,
-			expectConfig: pluginConfiguration{
-				directivesMap: DirectivesMap{
-					"default": []string{"SecRuleEngine On"},
-				},
-				metricLabels:           map[string]string{},
-				defaultDirectives:      "default",
-				perAuthorityDirectives: map[string]string{},
-				failurePolicy:          FailurePolicyFail,
-				engine:                 "gw-waf",
-				namespace:              "prod",
-			},
-		},
-		{
 			name: "when cache_token is provided it should be used",
 			config: `
 			{
@@ -378,9 +332,6 @@ func TestParsePluginConfiguration(t *testing.T) {
 				assert.Equal(t, testCase.expectConfig.perAuthorityDirectives, cfg.perAuthorityDirectives)
 				assert.Equal(t, testCase.expectConfig.failurePolicy, cfg.failurePolicy)
 				assert.Equal(t, testCase.expectConfig.ruleSetCacheServerToken, cfg.ruleSetCacheServerToken)
-				assert.Equal(t, testCase.expectConfig.engine, cfg.engine)
-				assert.Equal(t, testCase.expectConfig.namespace, cfg.namespace)
-				assert.Equal(t, testCase.expectConfig.suppressCRSAuditLogs, cfg.suppressCRSAuditLogs)
 			}
 		})
 	}

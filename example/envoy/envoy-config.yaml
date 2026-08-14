@@ -1,25 +1,17 @@
 stats_config:
   stats_tags:
-    # Extract coraza_waf_* Prometheus labels from WASM-encoded stat names.
+    # Envoy extracts the first matching group as a value.
     # See https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/metrics/v3/stats.proto#config-metrics-v3-statsconfig.
-    - tag_name: engine
-      regex: "_engine=([a-zA-Z0-9](?:[-a-zA-Z0-9]*[a-zA-Z0-9])?)"
-    - tag_name: namespace
-      regex: "_namespace=([a-zA-Z0-9](?:[-a-zA-Z0-9]*[a-zA-Z0-9])?)"
-    - tag_name: driver_type
-      regex: "_driver_type=([a-z]+)"
-    - tag_name: outcome
-      regex: "_outcome=([a-z]+)"
+    - tag_name: phase
+      regex: "(_phase=([a-z_]+))"
     - tag_name: rule_id
-      regex: "_rule_id=([0-9]+|other)"
-    - tag_name: severity
-      regex: "_severity=([A-Z]+)"
-    - tag_name: category
-      regex: "_category=([a-z_]+)"
-    - tag_name: type
-      regex: "_type=([a-z_]+)"
-    - tag_name: status
-      regex: "_status=([a-z]+)"
+      regex: "(_ruleid=([0-9]+))"
+    - tag_name: identifier
+      regex: "(_identifier=([0-9a-z.:]+))"
+    - tag_name: owner
+      regex: "(_owner=([0-9a-z.:]+))"
+    - tag_name: authority
+      regex: "(_authority=([0-9a-z.:]+))"
 
 static_resources:
   listeners:
@@ -78,9 +70,10 @@ static_resources:
                                   ]
                               },
                               "default_directives": "rs1",
-                              "metrics_mode": "contract",
-                              "engine": "example-engine",
-                              "namespace": "example",
+                              "metric_labels": {
+                                "owner": "coraza",
+                                "identifier": "global"
+                              },
                               "per_authority_directives":{
                                   "foo.example.com":"rs2",
                                   "bar.example.com":"rs2"
