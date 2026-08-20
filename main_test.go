@@ -22,14 +22,11 @@ import (
 	"github.com/corazawaf/coraza-proxy-wasm/wasmplugin"
 )
 
-const defaultPluginConfigForTests = `{"directives_map": {"default": []}, "default_directives": "default", "metrics_mode": "contract", "engine": "test-engine", "namespace": "test-ns"}`
-
-func checkRequestOutcomeMetric(t *testing.T, host proxytest.HostEmulator, outcome string, expectedCounter uint64) {
+func checkTXMetric(t *testing.T, host proxytest.HostEmulator, expectedCounter int) {
 	t.Helper()
-	stat := "coraza_waf.requests_total_driver_type=wasm_engine=test-engine_namespace=test-ns_outcome=" + outcome
-	value, err := host.GetCounterMetric(stat)
+	value, err := host.GetCounterMetric("waf_filter.tx.total")
 	require.NoError(t, err)
-	require.Equal(t, expectedCounter, value)
+	require.Equal(t, uint64(expectedCounter), value)
 }
 
 var actionName = map[types.Action]string{
@@ -427,9 +424,9 @@ func TestLifecycle(t *testing.T) {
 			tt := tc
 
 			t.Run(tt.name, func(t *testing.T) {
-				conf := defaultPluginConfigForTests
+				conf := `{"directives_map": {"default": []}, "default_directives": "default"}`
 				if inlineRules := strings.TrimSpace(tt.inlineRules); inlineRules != "" {
-					conf = fmt.Sprintf(`{"directives_map": {"default": ["%s"]}, "default_directives": "default", "metrics_mode": "contract", "engine": "test-engine", "namespace": "test-ns"}`, inlineRules)
+					conf = fmt.Sprintf(`{"directives_map": {"default": ["%s"]}, "default_directives": "default"}`, inlineRules)
 				}
 				opt := proxytest.
 					NewEmulatorOption().
@@ -450,6 +447,8 @@ func TestLifecycle(t *testing.T) {
 
 				requestHdrsAction := host.CallOnRequestHeaders(id, reqHdrs, false)
 				require.Equal(t, tt.requestHdrsAction, requestHdrsAction)
+
+				checkTXMetric(t, host, 1)
 
 				// Stream bodies in chunks of 5
 
@@ -539,13 +538,6 @@ func TestLifecycle(t *testing.T) {
 
 				// Call OnHttpStreamDone.
 				host.CompleteHttpContext(id)
-
-				switch {
-				case tt.responded403, tt.responded413, tt.respondedNullBody:
-					checkRequestOutcomeMetric(t, host, "block", 1)
-				default:
-					checkRequestOutcomeMetric(t, host, "pass", 1)
-				}
 
 				pluginResp := host.GetSentLocalResponse(id)
 				switch {
