@@ -533,7 +533,7 @@ func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) 
 			return ctx.handleInternalEngineFailurePolicy(fmt.Sprintf("Failed to process request body in response headers phase: %v", err))
 		}
 		if interruption != nil {
-			return ctx.handleInterruption(interruptionPhaseHttpResponseHeaders, interruption)
+			return ctx.handleInterruption(interruptionPhaseHttpRequestBody, interruption)
 		}
 	}
 
